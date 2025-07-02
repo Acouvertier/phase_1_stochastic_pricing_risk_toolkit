@@ -5,10 +5,49 @@ import yfinance as yf
 
 from collections.abc import Callable
 from scipy.stats import rv_discrete, norm
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 # Symmetric walk
 _symmetric_walk = rv_discrete(a=-1,b=1,values=([-1,1],[0.5,0.5]))
+
+def _pay_off_euro_call(price:float,strike:float) -> float:
+    try:
+        if not (isinstance(price,float)):
+            price = float(price)
+        if not (isinstance(strike,float)):
+            strike = float(strike)
+    except ValueError as e:
+        raise ValueError(f"The provided strike or pice couldn't be type-cast to float: {e}")
+    
+    return max(0,price-strike)
+
+def _pay_off_euro_put(price:float,strike:float) -> float:
+    try:
+        if not (isinstance(price,float)):
+            price = float(price)
+        if not (isinstance(strike,float)):
+            strike = float(strike)
+    except ValueError as e:
+        raise ValueError(f"The provided strike or pice couldn't be type-cast to float: {e}")
+
+    return max(0,strike-price)
+
+def _pay_off_forward(price:float,strike:float) -> float:
+    try:
+        if not (isinstance(price,float)):
+            price = float(price)
+        if not (isinstance(strike,float)):
+            strike = float(strike)
+    except ValueError as e:
+        raise ValueError(f"The provided strike or pice couldn't be type-cast to float: {e}")
+
+    return price - strike
+
+_PAY_OFF_DICT = {
+    "euro_call": _pay_off_euro_call, 
+    "euro_put": _pay_off_euro_put, 
+    "forward": _pay_off_forward
+    }
 
 def _format_single_column(stock_data:pd.DataFrame,column_name:str) -> pd.DataFrame:
     just_close = stock_data[column_name]["Close"]
@@ -110,7 +149,7 @@ def gbm_price_sim(start:str,end:str,stock_ticker:str, realizations:int) -> Tuple
     close_log_return = price_log_data[f"LOG_RETURN_{stock_ticker}"]
     close_price = price_log_data[f"CLOSE_{stock_ticker}"]
     all_times = price_log_data.index
-    T = (all_times[-1] - all_times[0]).days / 365.25
+    T = (all_times[-1] - all_times[0]).days / 364.25
 
     initial_price = close_price.iloc[0]
     empirical_vol = np.sqrt(252) * close_log_return.std()
@@ -131,3 +170,36 @@ def log_returns_gbm_price_sim(simulation_df:pd.DataFrame) -> pd.DataFrame:
     log_return_df.columns = [f"LOG_RETURN_SIM_{i+1}" for i in range(simulation_df.shape[1])]
 
     return log_return_df
+
+def no_arbitrage_probs(up_factor:float,down_factor:float,rate:float) -> Tuple[float,float]:
+    try:
+        if not (isinstance(up_factor,float)):
+            up_factor = float(up_factor)
+        if not (isinstance(down_factor,float)):
+            down_factor = float(down_factor)
+        if not (isinstance(rate,float)):
+            rate = float(rate)
+    except ValueError as e:
+        raise ValueError(f"The provided factor or rate couldn't be type-cast to float: {e}")
+    if not (down_factor > 0 and down_factor < 1 + rate and 1 + rate < up_factor):
+        raise ValueError("No arbitrarge requires: 0 <= down_factor < 1 + rate < up_factor <= 1")
+    
+    p_0 = (1+rate-down_factor)/(up_factor - down_factor)
+
+    return (p_0, 1 - p_0)
+
+def fair_option_price_multi_period(periods:int,initial_price:float,up_factor:float,down_factor:float,rate:float,strike:float,pay_off_funct:Callable[[float,float],float]=_PAY_OFF_DICT["euro_call"]) -> Tuple[Dict, float]:
+    
+    p_0, q_0 = no_arbitrage_probs(up_factor,down_factor,rate)
+
+    end_prices =  np.array([initial_price *(up_factor**(periods-i))*(down_factor**(i)) for i in range(periods+1)])
+    end_values = np.array([pay_off_funct(initial_price *(up_factor**(periods-i))*(down_factor**(i)),strike) for i in range(periods+1)])
+
+    hedge_shares = {}
+
+    for i in reversed(range(periods)):
+        hedge_shares[i] = np.divide(np.diff(end_values),np.diff(end_prices))
+        end_values = (1/(1+rate))*(p_0*(end_values[:-1])+q_0*(end_values[1:]))
+        end_prices = (1/up_factor)*end_prices[1:]
+    
+    return float(end_values[0]), hedge_shares
